@@ -1,7 +1,7 @@
 import mimetypes
 import os
-from datetime import datetime
-from socket import *
+import datetime
+import socket
 import sys
 import textwrap
 
@@ -14,22 +14,28 @@ class HTTPWebServer(object):
         self.directory = directory
         self.port = port
         self.server_info = self.get_server_info()
+        self.server_socket = None
 
     def get_server_info(self):
         return (f"huangyibin's http server "
                 f"Python version {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
 
     def startup(self):
-        self.server_socket = socket(AF_INET, SOCK_STREAM)
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind(('', self.port))
         self.server_socket.listen(5)
         print('The web server is ready to receive')
-        while True:
-            connection_socket, addr = self.server_socket.accept()
-            print(f'The connection is established, address: {addr}')
-            self.handle_request(connection_socket, addr)
-            connection_socket.close()
-            print(f'The connection is closed, address: {addr}')
+        try:
+            while True:
+                connection_socket, addr = self.server_socket.accept()
+                print(f'The connection is established, address: {addr}')
+                self.handle_request(connection_socket, addr)
+                connection_socket.close()
+                print(f'The connection is closed, address: {addr}')
+        except KeyboardInterrupt:
+            print("\nServer interrupted by user. Shutting down...")
+        finally:
+            self.shutdown()
 
     def handle_request(self, connection_socket, address):
         # 解析HTTP请求
@@ -73,6 +79,7 @@ class HTTPWebServer(object):
             Content-Type: text/html
             Connection: close
             Server: {self.server_info}
+            
         """
         return textwrap.dedent(response)
 
@@ -91,13 +98,13 @@ class HTTPWebServer(object):
         Server: {self.server_info}
         Content-Type: {self.get_content_type(file_path)}
         Content-Length: {file_stat.st_size}
-        Last-Modified: {self.format_http_date(datetime.fromtimestamp(file_stat.st_mtime))}
+        Last-Modified: {self.format_http_date(datetime.datetime.fromtimestamp(file_stat.st_mtime))}
 
         """
         return textwrap.dedent(response)
 
     def get_current_http_date(self):
-        return self.format_http_date(datetime.now())
+        return self.format_http_date(datetime.datetime.now())
 
     def format_http_date(self, date):
         return date.strftime('%a, %d %b %Y %H:%M:%S GMT')
@@ -121,7 +128,4 @@ class HTTPWebServer(object):
 
 if __name__ == '__main__':
     server = HTTPWebServer()
-    try:
-        server.startup()
-    finally:
-        server.shutdown()
+    server.startup()
