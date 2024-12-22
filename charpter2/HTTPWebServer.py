@@ -9,10 +9,11 @@ import datetime
 import socket
 import sys
 import textwrap
+import itertools
+import logging
 
 
 class HTTPWebServer(object):
-
     DEFAULT_CONTENT_TYPE = 'application/octet-stream'
 
     def __init__(self, directory=os.getcwd(), port=80):
@@ -20,6 +21,7 @@ class HTTPWebServer(object):
         self.port = port
         self.server_info = self.get_server_info()
         self.server_socket = None
+        logging.basicConfig(level=logging.INFO)
 
     def get_server_info(self):
         return (f"huangyibin's http server "
@@ -29,22 +31,22 @@ class HTTPWebServer(object):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind(('', self.port))
         self.server_socket.listen(5)
-        print('The web server is ready to receive')
+        logging.info('The web server is ready to receive')
         try:
             while True:
                 connection_socket, addr = self.server_socket.accept()
-                print(f'The connection is established, address: {addr}')
+                logging.info(f'The connection is established, address: {addr}')
                 self.handle_request(connection_socket, addr)
                 connection_socket.close()
-                print(f'The connection is closed, address: {addr}')
+                logging.info(f'The connection is closed, address: {addr}')
         except KeyboardInterrupt:
-            print("\nServer interrupted by user. Shutting down...")
+            logging.info("\nServer interrupted by user. Shutting down...")
         finally:
             self.shutdown()
 
     def handle_request(self, connection_socket, address):
         # 解析HTTP请求
-        url = self.read_url(connection_socket)
+        http_method, url, http_version, request_headers = self.read_request(connection_socket)
         if not url:
             self.send_http_404_response(connection_socket)
             return
@@ -55,47 +57,84 @@ class HTTPWebServer(object):
             self.send_http_404_response(connection_socket)
             return
 
-        self.send_file_response_header(connection_socket, file_path)
+        # 获取文件信息
+        file_stat = os.stat(file_path)
+
+        # 检测文件是否已修改
+        if self.is_not_modified(request_headers, file_stat):
+            self.send_http_304_response(connection_socket)
+            return
+
+        self.send_file_response_header(connection_socket, file_path, file_stat)
         self.send_file_response_body(connection_socket, file_path)
 
-    def read_url(self, connection_socket):
-        request_message = connection_socket.recv(2048).decode('utf-8')
+    def read_request(self, connection_socket):
+        request_message = connection_socket.recv(4096).decode('utf-8')
         request_lines = request_message.splitlines()
         if not request_lines:
             return None
-        status_line = request_message.splitlines()[0]
-        print(f"Status Line: {status_line}")
+        http_method, url, http_version = self.read_status_line(request_lines)
+        request_headers = self.read_request_headers(request_lines)
+        return http_method, url, http_version, request_headers
+
+    def read_status_line(self, request_lines):
+        status_line = request_lines[0]
+        logging.info(f"Status Line: {status_line}")
         try:
             (http_method, url, http_version) = status_line.split(' ')
         except ValueError as e:
-            print(f"Error parsing request line: {e}")
-            return None
+            logging.info(f"Error parsing request line: {e}")
+            return None, None, None
         except Exception as e:
-            print(f"Unexpected error: {e}")
-            return None
-        return url
+            logging.info(f"Unexpected error: {e}")
+            return None, None, None
+        return http_method, url, http_version
+
+    def read_request_headers(self, request_lines):
+        header_lines = list(itertools.takewhile(lambda x: x != "", request_lines[1:]))
+        request_headers = {
+            key.lower(): value.strip()
+            for key, value in (line.split(":", 1) for line in header_lines if ":" in line)
+        }
+        return request_headers
 
     def send_http_404_response(self, connection_socket):
-        connection_socket.send(self.build_http_404_response().encode('utf-8'))
+        connection_socket.send(self.build_http_response('404 Not Found').encode('utf-8'))
 
-    def build_http_404_response(self):
+    def build_http_response(self, status, extra_headers=None):
         response = f"""
-            HTTP/1.1 404 Not Found
+            HTTP/1.1 {status}
             Content-Type: text/html
             Connection: close
             Server: {self.server_info}
-            
+            Date: {self.get_current_http_date()}
+
         """
+        if extra_headers:
+            response += extra_headers
         return textwrap.dedent(response)
 
     def get_file_path(self, url):
         return os.path.join(self.directory, *url.split('/'))
 
-    def send_file_response_header(self, connection_socket, file_path):
-        connection_socket.send(self.build_http_file_response_header(file_path).encode('utf-8'))
+    def is_not_modified(self, request_headers, file_stat):
+        if 'if-modified-since' in request_headers:
+            modified_since = request_headers['if-modified-since']
+            logging.debug(f'modified_since:{modified_since}')
+            try:
+                request_time = datetime.datetime.strptime(modified_since, '%a, %d %b %Y %H:%M:%S GMT')
+            except ValueError:
+                return False
+            logging.debug(f'request_time:{request_time}')
+            return request_time >= datetime.datetime.fromtimestamp(file_stat.st_mtime).replace(microsecond=0)
 
-    def build_http_file_response_header(self, file_path):
-        file_stat = os.stat(file_path)
+    def send_http_304_response(self, connection_socket):
+        connection_socket.send(self.build_http_response('304 Not Modified').encode('utf-8'))
+
+    def send_file_response_header(self, connection_socket, file_path, file_stat):
+        connection_socket.send(self.build_http_file_response_header(file_path, file_stat).encode('utf-8'))
+
+    def build_http_file_response_header(self, file_path, file_stat):
         response = f"""
         HTTP/1.1 200 OK
         Connection: close
@@ -126,7 +165,7 @@ class HTTPWebServer(object):
                 chunk = file.read(1024)
 
     def shutdown(self):
-        print('The web server is shutting down')
+        logging.info('The web server is shutting down')
         if self.server_socket:
             self.server_socket.close()
 
